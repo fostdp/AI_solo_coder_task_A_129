@@ -30,7 +30,6 @@ impl MqttClient {
             self.config.mqtt_port,
         );
         mqttoptions.set_keep_alive(std::time::Duration::from_secs(60));
-        mqttoptions.set_reconnect_interval(std::time::Duration::from_secs(5));
         
         if let (Some(username), Some(password)) = (self.config.mqtt_username.clone(), self.config.mqtt_password.clone()) {
             mqttoptions.set_credentials(username, password);
