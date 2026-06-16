@@ -162,9 +162,12 @@ pub struct CastingSimulationRequest {
 pub struct VibrationMode {
     pub mode_order: usize,
     pub frequency_hz: f64,
+    pub nonlinear_frequency_hz: f64,
     pub damping_ratio: f64,
     pub node_pattern: String,
     pub modal_displacements: Vec<(f64, f64, f64)>,
+    pub effective_force_amplitude: f64,
+    pub arc_length_converged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,7 +205,7 @@ pub struct AcousticAnalysisRequest {
     pub use_sensor_calibration: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AlarmSeverity {
     Info,
     Warning,
@@ -210,7 +213,7 @@ pub enum AlarmSeverity {
     Fatal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AlarmType {
     FrequencyDeviation,
     ShrinkageDefect,
@@ -218,6 +221,7 @@ pub enum AlarmType {
     AlloyAnomaly,
     StructuralFailureRisk,
     SoundQualityDegradation,
+    Info,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
