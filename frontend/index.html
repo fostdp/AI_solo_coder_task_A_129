@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>古代铜鼓铸造工艺仿真与声学特性分析系统</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .glow { box-shadow: 0 0 30px rgba(234,179,8,0.15); }
+  .bronze-gradient {
+    background: linear-gradient(135deg, #78350f 0%, #a16207 25%, #ca8a04 50%, #a16207 75%, #78350f 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  #three-canvas { border-radius: 12px; background: radial-gradient(ellipse at center, #1f2937 0%, #0f172a 70%); }
+  .tab-btn.active { background: linear-gradient(135deg, #ca8a04, #a16207); color: white; }
+  .gauge-bg { background: conic-gradient(from 180deg, #22c55e 0deg 180deg, #eab308 180deg 260deg, #ef4444 260deg 360deg); }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #a16207; border-radius: 3px; }
+  .heatmap-cell { transition: transform 0.1s; }
+  .heatmap-cell:hover { transform: scale(1.4); z-index:10; }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+<header class="bg-slate-800/90 backdrop-blur border-b border-amber-900/50 sticky top-0 z-50">
+  <div class="max-w-[1920px] mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-4">
+      <div class="w-12 h-12 rounded-full bg-gradient-to-br from-amber-600 to-amber-900 flex items-center justify-center border-2 border-amber-400/50">
+        <span class="text-2xl">🥁</span>
+      </div>
+      <div>
+        <h1 class="text-xl font-bold bronze-gradient">古代铜鼓铸造工艺仿真与声学特性分析系统</h1>
+        <p class="text-xs text-slate-400">Bronze Drum Casting Simulation & Acoustic Analysis Platform</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <select id="drum-select" class="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-amber-500"></select>
+      <div class="flex items-center gap-2 text-xs text-slate-400">
+        <span id="system-status" class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+        <span id="last-update">等待连接...</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-[1920px] mx-auto p-6 grid grid-cols-12 gap-6">
+
+  <!-- 左侧控制区 -->
+  <aside class="col-span-3 space-y-5">
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700 glow">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center gap-2">
+        <span>⚙️</span> 工艺控制
+      </h2>
+      <div class="space-y-4 text-sm">
+        <div>
+          <label class="text-slate-400 text-xs">浇注温度 (℃)</label>
+          <input id="pour-temp" type="range" min="1050" max="1300" value="1180" class="w-full accent-amber-500">
+          <div class="flex justify-between text-xs text-slate-500"><span>1050</span><span id="pour-temp-val" class="text-amber-300">1180℃</span><span>1300</span></div>
+        </div>
+        <div>
+          <label class="text-slate-400 text-xs">铸型温度 (℃)</label>
+          <input id="mold-temp" type="range" min="20" max="600" value="300" class="w-full accent-amber-500">
+          <div class="flex justify-between text-xs text-slate-500"><span>20</span><span id="mold-temp-val" class="text-amber-300">300℃</span><span>600</span></div>
+        </div>
+        <div>
+          <label class="text-slate-400 text-xs">冷却时间 (分钟)</label>
+          <input id="cooling-time" type="range" min="10" max="240" value="60" class="w-full accent-amber-500">
+          <div class="flex justify-between text-xs text-slate-500"><span>10</span><span id="cooling-time-val" class="text-amber-300">60分</span><span>240</span></div>
+        </div>
+        <div>
+          <label class="text-slate-400 text-xs">Sn含量 (%)</label>
+          <input id="tin-content" type="range" min="5" max="28" value="18" class="w-full accent-amber-500">
+          <div class="flex justify-between text-xs text-slate-500"><span>5</span><span id="tin-val" class="text-amber-300">18%</span><span>28</span></div>
+        </div>
+        <button id="run-casting" class="w-full mt-2 py-2.5 bg-gradient-to-r from-amber-600 to-amber-800 hover:from-amber-500 hover:to-amber-700 rounded-lg font-semibold text-sm transition-all">
+          🏺 运行铸造仿真
+        </button>
+        <button id="run-acoustic" class="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-800 hover:from-indigo-500 hover:to-indigo-700 rounded-lg font-semibold text-sm transition-all">
+          🔊 进行声学分析
+        </button>
+      </div>
+    </div>
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center gap-2">
+        <span>📊</span> 合金成分
+      </h2>
+      <canvas id="alloy-chart" class="w-full" height="140"></canvas>
+    </div>
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center gap-2">
+        <span>📡</span> 传感器模拟器
+      </h2>
+      <div class="text-xs text-slate-400 mb-3 space-y-1">
+        <div>运行 <code class="text-amber-300">python sensor_simulator.py --interval 60</code></div>
+        <div>或使用下方按钮进行测试：</div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="mock-reading" class="py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs">模拟读数</button>
+        <button id="inject-fault" class="py-2 bg-red-900/60 hover:bg-red-800/60 rounded-lg text-xs">注入异常</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- 中间3D显示区 -->
+  <section class="col-span-6 space-y-5">
+
+    <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex gap-2">
+          <button data-tab="3d" class="tab-btn active px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-700">🥁 三维模型</button>
+          <button data-tab="modes" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-700">💫 振动模态</button>
+          <button data-tab="soundfield" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-700">🌊 声场云图</button>
+          <button data-tab="defects" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-700">⚠️ 缺陷分布</button>
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+          <label class="flex items-center gap-1.5"><input id="anim-toggle" type="checkbox" checked class="accent-amber-500">动画</label>
+          <select id="mode-select" class="bg-slate-700 border border-slate-600 rounded px-2 py-1"></select>
+        </div>
+      </div>
+      <div id="viewport-wrap" class="relative">
+        <canvas id="three-canvas" class="w-full" style="height:560px;"></canvas>
+        <div id="overlay-info" class="absolute top-4 left-4 bg-black/60 backdrop-blur rounded-lg p-3 text-xs space-y-1 max-w-xs">
+          <div class="text-amber-400 font-semibold mb-1">当前视图</div>
+          <div class="text-slate-300" id="overlay-text">铜鼓三维几何模型（可拖拽旋转/滚轮缩放）</div>
+        </div>
+        <div id="legend" class="absolute bottom-4 right-4 bg-black/60 backdrop-blur rounded-lg p-3 text-xs">
+          <div class="text-amber-400 font-semibold mb-2">色标</div>
+          <div id="legend-bars" class="space-y-1.5"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-5">
+      <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700">
+        <h3 class="text-amber-400 text-sm font-semibold mb-3">🎵 敲击音频谱</h3>
+        <canvas id="spectrum-chart" class="w-full" height="180"></canvas>
+      </div>
+      <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700">
+        <h3 class="text-amber-400 text-sm font-semibold mb-3">📈 共振频率响应</h3>
+        <canvas id="frequency-chart" class="w-full" height="180"></canvas>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- 右侧结果区 -->
+  <aside class="col-span-3 space-y-5">
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700 glow">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center gap-2">
+        <span>🎯</span> 综合品质评分
+      </h2>
+      <div class="flex justify-center mb-2">
+        <canvas id="quality-gauge" width="200" height="120"></canvas>
+      </div>
+      <div class="grid grid-cols-2 gap-3 text-xs mt-3">
+        <div class="bg-slate-700/60 rounded-lg p-2.5">
+          <div class="text-slate-400">铸造品质</div>
+          <div class="text-xl font-bold text-amber-300" id="cast-quality">--</div>
+        </div>
+        <div class="bg-slate-700/60 rounded-lg p-2.5">
+          <div class="text-slate-400">声学品质</div>
+          <div class="text-xl font-bold text-indigo-300" id="acoustic-quality">--</div>
+        </div>
+        <div class="bg-slate-700/60 rounded-lg p-2.5">
+          <div class="text-slate-400">缺陷数量</div>
+          <div class="text-xl font-bold text-red-300" id="defect-count">0</div>
+        </div>
+        <div class="bg-slate-700/60 rounded-lg p-2.5">
+          <div class="text-slate-400">风险等级</div>
+          <div class="text-xl font-bold text-slate-200" id="risk-level">--</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center gap-2">
+        <span>📏</span> 壁厚分布
+      </h2>
+      <canvas id="thickness-heatmap" class="w-full" height="170"></canvas>
+    </div>
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700">
+      <h2 class="text-amber-400 font-semibold mb-4 flex items-center justify-between">
+        <span class="flex items-center gap-2"><span>🚨</span> 告警系统</span>
+        <span id="alarm-count" class="text-xs bg-red-600/80 rounded-full px-2 py-0.5">0</span>
+      </h2>
+      <div id="alarm-list" class="space-y-2 max-h-72 overflow-y-auto text-xs pr-1">
+        <div class="text-slate-500 text-center py-8">暂无告警</div>
+      </div>
+      <button id="connect-ws" class="w-full mt-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs">
+        🔗 连接告警流
+      </button>
+    </div>
+
+    <div class="bg-slate-800/80 rounded-xl p-5 border border-slate-700">
+      <h2 class="text-amber-400 font-semibold mb-3 text-sm">📐 尺寸参数</h2>
+      <div class="grid grid-cols-3 gap-2 text-center text-xs">
+        <div>
+          <div class="text-slate-400">直径</div>
+          <div class="text-amber-300 font-semibold" id="dim-diameter">--cm</div>
+        </div>
+        <div>
+          <div class="text-slate-400">高度</div>
+          <div class="text-amber-300 font-semibold" id="dim-height">--cm</div>
+        </div>
+        <div>
+          <div class="text-slate-400">质量</div>
+          <div class="text-amber-300 font-semibold" id="dim-mass">--kg</div>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
