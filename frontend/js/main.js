@@ -86,6 +86,162 @@ scene.add(drumGroup);
 let drumMesh = null, rimMesh = null, sideMesh = null;
 let frogMeshes = [];
 let soundFieldGroup = null, defectMarkers = [];
+let modeShaderMaterial = null;
+let modeDisplacementTextures = [];
+let modeAnimationUniforms = null;
+
+// ============================================================
+// 模态动画 GPU 着色器
+// ============================================================
+const modeVertexShader = /* glsl */`
+  uniform float uTime;
+  uniform float uModeIndex;
+  uniform float uModeCount;
+  uniform float uAmplitude;
+  uniform float uFrequency;
+  uniform sampler2D uDisplacementTex;
+  uniform float uTexSize;
+  uniform float uRadius;
+
+  varying vec3 vColor;
+  varying float vDisplacement;
+  varying vec2 vPos;
+
+  void main() {
+    vec3 pos = position;
+    vPos = position.xz;
+
+    vec2 uv = (position.xz / uRadius + 1.0) * 0.5;
+
+    vec4 dispSample = texture2D(uDisplacementTex, uv);
+    float w = dispSample.r * 2.0 - 1.0;
+
+    float phase = uTime * uFrequency * 6.28318;
+    float dy = sin(phase) * uAmplitude * (abs(w) * 3.0 + 0.3);
+
+    float use = step(-0.001, position.y);
+    pos.y += dy * use;
+
+    float norm = clamp(abs(dy) / uAmplitude * 0.5, 0.0, 1.0);
+    float hue = 0.65 - norm * 0.65;
+    vec3 c = hsl2rgb(hue, 0.85, 0.5 + norm * 0.2);
+    vColor = c;
+    vDisplacement = norm;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+const modeFragmentShader = /* glsl */`
+  uniform float uUseModeColors;
+  varying vec3 vColor;
+  varying float vDisplacement;
+  varying vec2 vPos;
+
+  void main() {
+    if (uUseModeColors > 0.5) {
+      gl_FragColor = vec4(vColor, 1.0);
+    } else {
+      vec3 bronze = vec3(0.72, 0.53, 0.04);
+      gl_FragColor = vec4(bronze, 1.0);
+    }
+  }
+`;
+
+function createModeShaderMaterial(baseMaterial) {
+  const uniforms = {
+    uTime: { value: 0 },
+    uModeIndex: { value: 0 },
+    uModeCount: { value: 1 },
+    uAmplitude: { value: 0.03 },
+    uFrequency: { value: 100 },
+    uDisplacementTex: { value: null },
+    uTexSize: { value: 24 },
+    uRadius: { value: 1.0 },
+    uUseModeColors: { value: 0 },
+  };
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: `
+      vec3 hsl2rgb(float h, float s, float l) {
+        vec3 rgb = clamp(abs(mod(h*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0);
+        return l + s * (rgb - 0.5) * (1.0 - abs(2.0*l - 1.0));
+      }
+    ` + modeVertexShader,
+    fragmentShader: modeFragmentShader,
+    vertexColors: false,
+  });
+
+  if (baseMaterial) {
+    mat.metalness = baseMaterial.metalness || 0.9;
+    mat.roughness = baseMaterial.roughness || 0.3;
+  }
+
+  return mat;
+}
+
+function buildModeDisplacementTextures(modes, radius) {
+  modeDisplacementTextures.forEach(t => t.dispose());
+  modeDisplacementTextures = [];
+
+  modes.forEach(mode => {
+    const disps = mode.modal_displacements || [];
+    const res = Math.ceil(Math.sqrt(disps.length));
+    const size = Math.max(res, 16);
+
+    const data = new Float32Array(size * size * 4);
+    let maxW = 0;
+    disps.forEach(d => { if (Math.abs(d[2]) > maxW) maxW = Math.abs(d[2]); });
+    if (maxW < 1e-6) maxW = 1;
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = y * size + x;
+        const di = disps[idx] ? disps[idx][2] : 0;
+        const norm = (di / maxW + 1) * 0.5;
+        data[idx * 4] = norm;
+        data[idx * 4 + 1] = norm;
+        data[idx * 4 + 2] = norm;
+        data[idx * 4 + 3] = 1;
+      }
+    }
+
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+    tex.needsUpdate = true;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+
+    modeDisplacementTextures.push({
+      texture: tex,
+      frequency: mode.frequency_hz,
+      amplitude: 0.03 * (1 / (1 + mode.mode_order * 0.3)),
+      nonlinearFreq: mode.nonlinear_frequency_hz || mode.frequency_hz,
+    });
+  });
+}
+
+function updateModeAnimationGPU(timeSec) {
+  if (!modeShaderMaterial || state.currentView !== 'modes') return;
+
+  const modeData = modeDisplacementTextures[state.currentModeIndex];
+  if (!modeData) return;
+
+  const u = modeShaderMaterial.uniforms;
+  u.uTime.value = timeSec;
+  u.uDisplacementTex.value = modeData.texture;
+  u.uFrequency.value = modeData.nonlinearFreq;
+  u.uAmplitude.value = modeData.amplitude;
+  u.uUseModeColors.value = 1.0;
+}
+
+function resetModeAnimationGPU() {
+  if (!modeShaderMaterial) return;
+  modeShaderMaterial.uniforms.uUseModeColors.value = 0.0;
+  modeShaderMaterial.uniforms.uAmplitude.value = 0.0;
+}
 
 // ============================================================
 // 构建铜鼓模型
@@ -126,7 +282,12 @@ function buildBronzeDrum(diameterCm = 78.5, heightCm = 52.3) {
     }
   }
   faceGeom.computeVertexNormals();
-  drumMesh = new THREE.Mesh(faceGeom, bronzeMaterial.clone());
+
+  if (modeShaderMaterial) modeShaderMaterial.dispose();
+  modeShaderMaterial = createModeShaderMaterial(bronzeMaterial);
+  modeShaderMaterial.uniforms.uRadius.value = radius;
+  drumMesh = new THREE.Mesh(faceGeom, modeShaderMaterial);
+  drumMesh.userData.radius = radius;
   drumGroup.add(drumMesh);
 
   const rimGeom = new THREE.TorusGeometry(radius - thickness * 0.3, thickness * 0.7, 16, 96);
@@ -292,61 +453,25 @@ function buildLegend(container, title, colors, labels) {
 }
 
 // ============================================================
-// 振动模态动画
+// 振动模态动画（GPU 蒙皮版）
 // ============================================================
 function updateModeAnimation(timeSec) {
-  if (state.currentView !== 'modes' || !state.modes.length || !drumMesh) return;
-  const mode = state.modes[state.currentModeIndex];
-  if (!mode) return;
+  updateModeAnimationGPU(timeSec);
 
-  const freq = mode.frequency_hz;
-  const phase = timeSec * freq * Math.PI * 2;
-  const amp = 0.03 * (1 / (1 + mode.mode_order * 0.3));
-  const displacements = mode.modal_displacements || [];
-
-  const pos = drumMesh.geometry.attributes.position;
-  const count = pos.count;
-  if (!drumMesh.userData.originalY) {
-    drumMesh.userData.originalY = new Float32Array(count);
-    for (let i = 0; i < count; i++) drumMesh.userData.originalY[i] = pos.getY(i);
+  if (state.currentView === 'modes' && frogMeshes.length) {
+    const modeData = modeDisplacementTextures[state.currentModeIndex];
+    if (modeData) {
+      const phase = timeSec * modeData.nonlinearFreq * Math.PI * 2;
+      const amp = modeData.amplitude;
+      frogMeshes.forEach((f, idx) => {
+        f.position.y = (f.userData.baseY = f.userData.baseY ?? f.position.y) + Math.sin(phase + idx) * amp * 0.5;
+      });
+    }
   }
-  const res = Math.ceil(Math.sqrt(displacements.length));
-
-  const colors = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    const x = pos.getX(i), z = pos.getZ(i);
-    const R = drumMesh.geometry.parameters?.radiusTop || 1;
-    const xi = Math.floor(((x / R + 1) / 2) * res);
-    const zi = Math.floor(((z / R + 1) / 2) * res);
-    const idx = Math.min(displacements.length - 1, Math.max(0, zi * res + xi));
-    const w = displacements[idx] ? displacements[idx][2] : 0;
-    const origY = drumMesh.userData.originalY[i];
-    const use = origY > -0.001 ? 1 : 0;
-    const dy = Math.sin(phase) * amp * (Math.abs(w) * 3 + 0.3) * use;
-    pos.setY(i, origY + dy);
-
-    const norm = Math.min(1, Math.abs(dy) / amp * 0.5);
-    const col = new THREE.Color().setHSL(0.65 - norm * 0.65, 0.85, 0.5 + norm * 0.2);
-    colors[i*3] = col.r; colors[i*3+1] = col.g; colors[i*3+2] = col.b;
-  }
-  pos.needsUpdate = true;
-  drumMesh.geometry.computeVertexNormals();
-  drumMesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  drumMesh.material.vertexColors = true;
-
-  frogMeshes.forEach((f, idx) => {
-    f.position.y = (f.userData.baseY = f.userData.baseY ?? f.position.y) + Math.sin(phase + idx) * amp * 0.5;
-  });
 }
 
 function resetModeDeformation() {
-  if (!drumMesh || !drumMesh.userData.originalY) return;
-  const pos = drumMesh.geometry.attributes.position;
-  for (let i = 0; i < pos.count; i++) pos.setY(i, drumMesh.userData.originalY[i]);
-  pos.needsUpdate = true;
-  drumMesh.geometry.computeVertexNormals();
-  drumMesh.material.vertexColors = false;
-  drumMesh.geometry.deleteAttribute('color');
+  resetModeAnimationGPU();
   frogMeshes.forEach(f => { if (f.userData.baseY != null) f.position.y = f.userData.baseY; });
 }
 
@@ -764,6 +889,9 @@ function applyAcousticResult(r) {
   state.modes = r.vibration_modes || [];
   state.soundField = r.sound_field || [];
   if (state.soundField.length) buildSoundField();
+  if (state.modes.length && drumMesh) {
+    buildModeDisplacementTextures(state.modes, drumMesh.userData.radius || 1);
+  }
   populateModeSelect();
   refreshAllCharts();
 }
