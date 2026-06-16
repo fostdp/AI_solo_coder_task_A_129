@@ -117,6 +117,76 @@ impl CastingSimulator {
         let radius_cm = diameter_cm / 2.0;
         let aspect_ratio = height_cm / diameter_cm;
 
+        let sun_ray_angles: Vec<f64> = (0..12)
+            .map(|i| (i as f64) / 12.0 * 2.0 * PI)
+            .collect();
+
+        let eval_risk = |x_frac: f64, y_frac: f64| -> (f64, f64) {
+            let r_norm = ((x_frac - 0.5).powi(2) + (y_frac - 0.5).powi(2)).sqrt() * 2.0;
+            let r_norm = r_norm.min(1.0);
+
+            let center_factor = 1.0 - r_norm.powi(2);
+
+            let edge_distance = (1.0 - r_norm).max(0.01);
+            let modulus = (diameter_cm * 0.01 * height_cm * 0.01)
+                / (2.0 * PI * radius_cm * 0.01 * (edge_distance + 0.05));
+
+            let chvorinov_time = modulus.powi(2) / alpha * 1.2;
+            let normalized_time = total_time_s / (chvorinov_time + 1.0);
+
+            let thermal_grad = (pour_temp - mold_temp) / (edge_distance * 100.0 + 5.0);
+
+            let solidification_time = (1.0 + (1.0 - center_factor) * 2.0) * chvorinov_time
+                * latent_heat_factor;
+
+            let cooling_r = (pour_temp - solidus_temp) / (solidification_time + 1.0)
+                * (1.0 + (1.0 - edge_distance) * 0.5);
+
+            let time_pressure = if normalized_time > 1.5 { 0.0 } else { 1.0 - normalized_time / 1.5 };
+
+            let feed_distance = Self::calculate_feeding_distance(alloy, thermal_grad, cooling_r);
+            let feed_ratio = (edge_distance * radius_cm) / (feed_distance + 0.1);
+
+            let macroporosity_risk =
+                (1.0 - thermal_grad / 200.0).max(0.0) * time_pressure * (1.0 - feed_ratio.min(1.0));
+
+            let microporosity_risk =
+                (cooling_r / 50.0).min(1.0) * center_factor * (1.0 + (alloy.tin_pct - 15.0) * 0.02);
+
+            let hot_tear_factor = if cooling_r > 80.0 {
+                (cooling_r - 80.0) / 100.0 * (1.0 + (alloy.tin_pct / 100.0) * 2.0)
+            } else {
+                0.0
+            };
+
+            let total_risk = (macroporosity_risk * 0.5
+                + microporosity_risk * 0.35
+                + hot_tear_factor * 0.15)
+                .min(1.0);
+
+            let wall_geometry_factor = Self::wall_thickness_geometry_factor(
+                x_frac,
+                y_frac,
+                aspect_ratio,
+            );
+
+            let sun_pattern_factor = Self::sun_pattern_refinement_factor(
+                x_frac, y_frac, &sun_ray_angles,
+            );
+
+            let final_risk = (total_risk * wall_geometry_factor * sun_pattern_factor).min(1.0);
+
+            (final_risk, cooling_r)
+        };
+
+        let fine_grid = Self::adaptive_quadtree_refine(
+            0.0, 0.0, 1.0, 1.0,
+            &sun_ray_angles,
+            0,
+            3,
+            &eval_risk,
+        );
+
         let mut shrinkage_risk = Vec::with_capacity(resolution * resolution);
         let mut cooling_rate = Vec::with_capacity(resolution * resolution);
 
@@ -125,62 +195,158 @@ impl CastingSimulator {
                 let x_frac = (i as f64 + 0.5) / resolution as f64;
                 let y_frac = (j as f64 + 0.5) / resolution as f64;
 
-                let r_norm = ((x_frac - 0.5).powi(2) + (y_frac - 0.5).powi(2)).sqrt() * 2.0;
-                let r_norm = r_norm.min(1.0);
+                let (risk, cool) = Self::sample_quadtree(&fine_grid, x_frac, y_frac);
 
-                let center_factor = 1.0 - r_norm.powi(2);
-
-                let edge_distance = (1.0 - r_norm).max(0.01);
-                let modulus = (diameter_cm * 0.01 * height_cm * 0.01)
-                    / (2.0 * PI * radius_cm * 0.01 * (edge_distance + 0.05));
-
-                let chvorinov_time = modulus.powi(2) / alpha * 1.2;
-                let normalized_time = total_time_s / (chvorinov_time + 1.0);
-
-                let thermal_grad = (pour_temp - mold_temp) / (edge_distance * 100.0 + 5.0);
-
-                let solidification_time = (1.0 + (1.0 - center_factor) * 2.0) * chvorinov_time
-                    * latent_heat_factor;
-
-                let cooling_r = (pour_temp - solidus_temp) / (solidification_time + 1.0)
-                    * (1.0 + (1.0 - edge_distance) * 0.5);
-
-                let time_pressure = if normalized_time > 1.5 { 0.0 } else { 1.0 - normalized_time / 1.5 };
-
-                let feed_distance = Self::calculate_feeding_distance(alloy, thermal_grad, cooling_r);
-                let feed_ratio = (edge_distance * radius_cm) / (feed_distance + 0.1);
-
-                let macroporosity_risk =
-                    (1.0 - thermal_grad / 200.0).max(0.0) * time_pressure * (1.0 - feed_ratio.min(1.0));
-
-                let microporosity_risk =
-                    (cooling_r / 50.0).min(1.0) * center_factor * (1.0 + (alloy.tin_pct - 15.0) * 0.02);
-
-                let hot_tear_factor = if cooling_r > 80.0 {
-                    (cooling_r - 80.0) / 100.0 * (1.0 + (alloy.tin_pct / 100.0) * 2.0)
-                } else {
-                    0.0
-                };
-
-                let total_risk = (macroporosity_risk * 0.5
-                    + microporosity_risk * 0.35
-                    + hot_tear_factor * 0.15)
-                    .min(1.0);
-
-                let wall_geometry_factor = Self::wall_thickness_geometry_factor(
-                    x_frac,
-                    y_frac,
-                    aspect_ratio,
-                );
-
-                let final_risk = (total_risk * wall_geometry_factor).min(1.0);
-
-                shrinkage_risk.push((x_frac, y_frac, final_risk));
-                cooling_rate.push((x_frac, y_frac, cooling_r));
+                shrinkage_risk.push((x_frac, y_frac, risk));
+                cooling_rate.push((x_frac, y_frac, cool));
             }
         }
 
         (shrinkage_risk, cooling_rate)
+    }
+
+    fn sun_pattern_refinement_factor(
+        x_frac: f64,
+        y_frac: f64,
+        ray_angles: &[f64],
+    ) -> f64 {
+        let dx = x_frac - 0.5;
+        let dy = y_frac - 0.5;
+        let r = (dx * dx + dy * dy).sqrt() * 2.0;
+
+        if r > 0.45 {
+            return 1.0;
+        }
+
+        let mut ray_enhancement: f64 = 0.0;
+        let theta = dy.atan2(dx);
+
+        for &ray_angle in ray_angles {
+            let angle_diff = ((theta - ray_angle).sin()).abs();
+            let radial_dist = (r - 0.22).abs();
+            let ray_intensity = (-radial_dist / 0.06).exp()
+                * (-angle_diff * 8.0).exp();
+            ray_enhancement = ray_enhancement.max(ray_intensity);
+        }
+
+        let boss_enhancement = if r < 0.12 {
+            (-r / 0.04).exp() * 0.8
+        } else {
+            0.0
+        };
+
+        let ring_enhancement = ((r - 0.32).abs() / 0.03).exp().recip() * 0.4;
+
+        1.0 + (ray_enhancement * 0.7 + boss_enhancement * 0.9 + ring_enhancement * 0.5)
+    }
+
+    fn adaptive_quadtree_refine(
+        x0: f64,
+        y0: f64,
+        w: f64,
+        h: f64,
+        ray_angles: &[f64],
+        depth: usize,
+        max_depth: usize,
+        eval_fn: &dyn Fn(f64, f64) -> (f64, f64),
+    ) -> Vec<(f64, f64, f64, f64, f64, f64)> {
+        let cx = x0 + w / 2.0;
+        let cy = y0 + h / 2.0;
+
+        let need_refine = if depth >= max_depth {
+            false
+        } else {
+            Self::cell_needs_refinement(x0, y0, w, h, ray_angles, depth)
+        };
+
+        if need_refine {
+            let hw = w / 2.0;
+            let hh = h / 2.0;
+            let mut cells = Vec::new();
+
+            let sub_cells = [
+                (x0, y0),
+                (x0 + hw, y0),
+                (x0, y0 + hh),
+                (x0 + hw, y0 + hh),
+            ];
+
+            for (sx, sy) in sub_cells {
+                let sub = Self::adaptive_quadtree_refine(
+                    sx, sy, hw, hh,
+                    ray_angles,
+                    depth + 1,
+                    max_depth,
+                    eval_fn,
+                );
+                cells.extend(sub);
+            }
+            cells
+        } else {
+            let (risk, cool) = eval_fn(cx, cy);
+            vec![(x0, y0, w, h, risk, cool)]
+        }
+    }
+
+    fn cell_needs_refinement(
+        x0: f64,
+        y0: f64,
+        w: f64,
+        h: f64,
+        ray_angles: &[f64],
+        depth: usize,
+    ) -> bool {
+        let sample_pts = [
+            (x0 + w * 0.25, y0 + h * 0.25),
+            (x0 + w * 0.75, y0 + h * 0.25),
+            (x0 + w * 0.25, y0 + h * 0.75),
+            (x0 + w * 0.75, y0 + h * 0.75),
+            (x0 + w * 0.5, y0 + h * 0.5),
+        ];
+
+        let mut factors = [0.0; 5];
+        for (i, (x, y)) in sample_pts.iter().enumerate() {
+            factors[i] = Self::sun_pattern_refinement_factor(*x, *y, ray_angles);
+        }
+
+        let max_f = factors.iter().cloned().fold(f64::NAN, f64::max);
+        let min_f = factors.iter().cloned().fold(f64::NAN, f64::min);
+        let gradient = (max_f - min_f) / max_f.max(0.01);
+
+        if depth < 1 {
+            true
+        } else if depth < 2 {
+            gradient > 0.05
+        } else {
+            gradient > 0.1
+        }
+    }
+
+    fn sample_quadtree(
+        cells: &[(f64, f64, f64, f64, f64, f64)],
+        x: f64,
+        y: f64,
+    ) -> (f64, f64) {
+        for &(cx, cy, cw, ch, risk, cool) in cells {
+            if x >= cx && x < cx + cw && y >= cy && y < cy + ch {
+                return (risk, cool);
+            }
+        }
+
+        let mut nearest_risk = 0.0;
+        let mut nearest_cool = 0.0;
+        let mut min_dist = f64::MAX;
+        for &(cx, cy, cw, ch, risk, cool) in cells {
+            let ccx = cx + cw / 2.0;
+            let ccy = cy + ch / 2.0;
+            let d = (x - ccx).powi(2) + (y - ccy).powi(2);
+            if d < min_dist {
+                min_dist = d;
+                nearest_risk = risk;
+                nearest_cool = cool;
+            }
+        }
+        (nearest_risk, nearest_cool)
     }
 
     fn calculate_thermal_diffusivity(alloy: &AlloyComposition) -> f64 {
