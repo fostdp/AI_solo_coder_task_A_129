@@ -128,9 +128,12 @@ impl AcousticAnalyzer {
                     modes.push(VibrationMode {
                         mode_order: order,
                         frequency_hz: frequency,
+                        nonlinear_frequency_hz: frequency,
                         damping_ratio: damping,
                         node_pattern,
                         modal_displacements: displacements,
+                        effective_force_amplitude: 0.0,
+                        arc_length_converged: false,
                     });
                 }
             }
@@ -140,6 +143,25 @@ impl AcousticAnalyzer {
         for (i, mode) in modes.iter_mut().enumerate() {
             mode.mode_order = i + 1;
         }
+
+        for mode in modes.iter_mut() {
+            let (nonlinear_freq, converged, force_amp) = Self::riks_arc_length_solve(
+                mode, a, h, e, nu, rho,
+            );
+            mode.nonlinear_frequency_hz = nonlinear_freq;
+            mode.arc_length_converged = converged;
+            mode.effective_force_amplitude = force_amp;
+
+            let disp_scale = if converged {
+                (nonlinear_freq / mode.frequency_hz).sqrt().min(1.5).max(0.7)
+            } else {
+                1.0
+            };
+            mode.modal_displacements.iter_mut().for_each(|d| {
+                d.2 *= disp_scale;
+            });
+        }
+
         modes
     }
 
@@ -271,6 +293,316 @@ impl AcousticAnalyzer {
         }
         let t = z + p.len() as f64 - 0.5;
         (2.0 * PI).sqrt() * t.powf(z + 0.5) * (-t).exp() * x
+    }
+
+    fn riks_arc_length_solve(
+        mode: &VibrationMode,
+        a: f64,
+        h: f64,
+        e: f64,
+        nu: f64,
+        rho: f64,
+    ) -> (f64, bool, f64) {
+        let omega_linear = 2.0 * PI * mode.frequency_hz;
+        let d = e * h.powi(3) / (12.0 * (1.0 - nu.powi(2)));
+        let rho_h = rho * h;
+
+        let n_grid = 12;
+        let total_nodes = n_grid * n_grid;
+
+        let mut displ: Vec<f64> = vec![0.0; total_nodes];
+        let mut force_ref: Vec<f64> = vec![0.0; total_nodes];
+
+        let mut max_disp: f64 = 0.0;
+        for i in 0..n_grid {
+            for j in 0..n_grid {
+                let idx = i * n_grid + j;
+                let di = mode.modal_displacements
+                    .get(idx)
+                    .map(|d| d.2)
+                    .unwrap_or(0.0);
+                force_ref[idx] = di;
+                max_disp = max_disp.max(di.abs());
+            }
+        }
+        if max_disp < 1e-12 {
+            return (mode.frequency_hz, false, 0.0);
+        }
+        let norm_factor = 1.0 / max_disp;
+        for f in force_ref.iter_mut() {
+            *f *= norm_factor;
+        }
+
+        let mut lambda = 0.0;
+        let mut arc_s = 0.0;
+        let delta_s = 0.05;
+        let alpha = a / h * 0.1;
+        let max_load_steps = 25;
+        let max_iter = 15;
+        let tol = 1e-4;
+
+        let mut converged_steps = 0;
+        let mut nonlinear_freq = mode.frequency_hz;
+
+        for step in 0..max_load_steps {
+            let mut iter_lambda = lambda;
+            let mut iter_d = displ.clone();
+            let mut iteration_converged = false;
+
+            for _iter in 0..max_iter {
+                let k_tan = Self::tangent_stiffness(
+                    &iter_d, &force_ref, a, h, e, nu, d, n_grid,
+                );
+
+                let residual = Self::compute_residual(
+                    &iter_d, &force_ref, iter_lambda, a, h, e, nu, d, n_grid,
+                );
+
+                let res_norm = residual.iter().map(|r| r * r).sum::<f64>().sqrt()
+                    / (total_nodes as f64).sqrt();
+
+                if res_norm < tol && step > 0 {
+                    iteration_converged = true;
+                    break;
+                }
+
+                let delta_u_force = Self::solve_linear_system(
+                    &k_tan, &force_ref, n_grid,
+                );
+
+                let delta_u_resid = Self::solve_linear_system(
+                    &k_tan, &residual, n_grid,
+                );
+
+                let d_dot: Vec<f64> = delta_u_force.iter()
+                    .map(|v| -v)
+                    .collect();
+
+                let delta_u_prev: Vec<f64> = iter_d.iter()
+                    .zip(displ.iter())
+                    .map(|(c, p)| c - p)
+                    .collect();
+
+                let du_dot = delta_u_prev.iter()
+                    .zip(d_dot.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>();
+
+                let d_norm2 = d_dot.iter().map(|x| x * x).sum::<f64>();
+                let u_norm2 = delta_u_prev.iter().map(|x| x * x).sum::<f64>();
+
+                let delta_lambda = if step == 0 {
+                    delta_s / (d_norm2 + alpha * alpha).sqrt()
+                } else {
+                    let ds2 = delta_s * delta_s;
+                    let numerator = -(du_dot + alpha * alpha * iter_lambda);
+                    let denom = d_norm2 + alpha * alpha;
+                    let disc = du_dot * du_dot - denom * (u_norm2 + alpha * alpha * iter_lambda * iter_lambda - ds2);
+                    if disc < 0.0 {
+                        delta_s / (d_norm2 + alpha * alpha).sqrt()
+                    } else {
+                        let sqrt_disc = disc.sqrt();
+                        let sol1 = (numerator + sqrt_disc) / denom;
+                        let sol2 = (numerator - sqrt_disc) / denom;
+                        if sol1.abs() < sol2.abs() { sol1 } else { sol2 }
+                    }
+                };
+
+                for i in 0..total_nodes {
+                    iter_d[i] = iter_d[i] - delta_u_resid[i] + d_dot[i] * delta_lambda;
+                }
+                iter_lambda += delta_lambda;
+            }
+
+            if iteration_converged || step == 0 {
+                displ = iter_d;
+                lambda = iter_lambda;
+                arc_s += delta_s;
+                converged_steps += 1;
+
+                let k_tan = Self::tangent_stiffness(
+                    &displ, &force_ref, a, h, e, nu, d, n_grid,
+                );
+                let k_eff = Self::effective_modal_stiffness(&k_tan, &force_ref, n_grid);
+                let omega_nl = (k_eff / rho_h / (a * a)).sqrt();
+                nonlinear_freq = omega_nl / (2.0 * PI);
+
+                if lambda > 1.5 && converged_steps > 3 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let force_amplitude = lambda * h * e * 0.001;
+        let did_converge = converged_steps >= 3;
+
+        (nonlinear_freq.max(mode.frequency_hz * 0.7), did_converge, force_amplitude)
+    }
+
+    fn tangent_stiffness(
+        displ: &[f64],
+        force_ref: &[f64],
+        a: f64,
+        h: f64,
+        e: f64,
+        nu: f64,
+        d: f64,
+        n: usize,
+    ) -> Vec<Vec<f64>> {
+        let n_nodes = n * n;
+        let mut k = vec![vec![0.0; n_nodes]; n_nodes];
+
+        let dx = a / (n - 1) as f64;
+        let dy = a / (n - 1) as f64;
+
+        for i in 0..n {
+            for j in 0..n {
+                let idx = i * n + j;
+
+                if i > 0 {
+                    let nb = (i - 1) * n + j;
+                    let k_ij = d / dx.powi(2) * 2.0;
+                    k[idx][idx] += k_ij;
+                    k[idx][nb] -= k_ij;
+                }
+                if i < n - 1 {
+                    let nb = (i + 1) * n + j;
+                    let k_ij = d / dx.powi(2) * 2.0;
+                    k[idx][idx] += k_ij;
+                    k[idx][nb] -= k_ij;
+                }
+                if j > 0 {
+                    let nb = i * n + (j - 1);
+                    let k_ij = d / dy.powi(2) * 2.0;
+                    k[idx][idx] += k_ij;
+                    k[idx][nb] -= k_ij;
+                }
+                if j < n - 1 {
+                    let nb = i * n + (j + 1);
+                    let k_ij = d / dy.powi(2) * 2.0;
+                    k[idx][idx] += k_ij;
+                    k[idx][nb] -= k_ij;
+                }
+
+                let w = displ[idx];
+                let nl_stiff = e * h / (1.0 - nu.powi(2)) * (w * w) / (a * a) * 0.5;
+                k[idx][idx] += nl_stiff;
+
+                for di in [-1, 0, 1].iter() {
+                    for dj in [-1, 0, 1].iter() {
+                        let ni = i as i32 + di;
+                        let nj = j as i32 + dj;
+                        if ni >= 0 && ni < n as i32 && nj >= 0 && nj < n as i32 {
+                            let nidx = ni as usize * n + nj as usize;
+                            let w_nb = displ[nidx];
+                            let coupling = e * h / (1.0 - nu) * w * w_nb / (a * a) * 0.1;
+                            k[idx][nidx] += coupling;
+                        }
+                    }
+                }
+            }
+        }
+
+        k
+    }
+
+    fn compute_residual(
+        displ: &[f64],
+        force_ref: &[f64],
+        lambda: f64,
+        a: f64,
+        h: f64,
+        e: f64,
+        nu: f64,
+        d: f64,
+        n: usize,
+    ) -> Vec<f64> {
+        let k = Self::tangent_stiffness(displ, force_ref, a, h, e, nu, d, n);
+        let mut res = vec![0.0; n * n];
+
+        for i in 0..n * n {
+            let mut ki = 0.0;
+            for j in 0..n * n {
+                ki += k[i][j] * displ[j];
+            }
+            res[i] = ki - lambda * force_ref[i];
+        }
+        res
+    }
+
+    fn solve_linear_system(
+        k: &[Vec<f64>],
+        b: &[f64],
+        n: usize,
+    ) -> Vec<f64> {
+        let n_nodes = n * n;
+        let mut a = k.to_vec();
+        let mut x = b.to_vec();
+
+        for k in 0..n_nodes {
+            let mut max_row = k;
+            let mut max_val = a[k][k].abs();
+            for i in (k + 1)..n_nodes {
+                if a[i][k].abs() > max_val {
+                    max_val = a[i][k].abs();
+                    max_row = i;
+                }
+            }
+            if max_row != k {
+                a.swap(k, max_row);
+                x.swap(k, max_row);
+            }
+
+            let pivot = a[k][k];
+            if pivot.abs() < 1e-12 {
+                for i in 0..n_nodes {
+                    x[i] = if i == k { b[i] / 1e-6 } else { 0.0 };
+                }
+                return x;
+            }
+
+            for i in (k + 1)..n_nodes {
+                let factor = a[i][k] / pivot;
+                for j in k..n_nodes {
+                    a[i][j] -= factor * a[k][j];
+                }
+                x[i] -= factor * x[k];
+            }
+        }
+
+        let mut result = vec![0.0; n_nodes];
+        for i in (0..n_nodes).rev() {
+            let mut sum = x[i];
+            for j in (i + 1)..n_nodes {
+                sum -= a[i][j] * result[j];
+            }
+            result[i] = sum / a[i][i];
+        }
+        result
+    }
+
+    fn effective_modal_stiffness(
+        k: &[Vec<f64>],
+        mode_shape: &[f64],
+        n: usize,
+    ) -> f64 {
+        let n_nodes = n * n;
+        let mut k_modal = 0.0;
+        let mut m_norm = 0.0;
+
+        for i in 0..n_nodes {
+            m_norm += mode_shape[i] * mode_shape[i];
+            for j in 0..n_nodes {
+                k_modal += mode_shape[i] * k[i][j] * mode_shape[j];
+            }
+        }
+
+        if m_norm < 1e-12 {
+            return 1.0;
+        }
+        k_modal / m_norm
     }
 
     fn compute_sound_radiation(
