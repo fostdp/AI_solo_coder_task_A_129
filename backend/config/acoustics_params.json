@@ -1,0 +1,102 @@
+{
+  "air": {
+    "sound_speed_ms": 343.0,
+    "density_kgm3": 1.21,
+    "attenuation_dbkm": 0.01
+  },
+  "vibration": {
+    "mode_count": 8,
+    "max_modes": 12,
+    "damping_ratio_range": [0.002, 0.01],
+    "frequency_min_hz": 50.0,
+    "frequency_max_hz": 5000.0
+  },
+  "circular_plate": {
+    "eigenvalues_lambda": [
+      {"m": 0, "n": 1, "lambda": 10.2158},
+      {"m": 0, "n": 2, "lambda": 39.7711},
+      {"m": 0, "n": 3, "lambda": 89.1040},
+      {"m": 0, "n": 4, "lambda": 158.183},
+      {"m": 0, "n": 5, "lambda": 247.005},
+      {"m": 0, "n": 6, "lambda": 355.556},
+      {"m": 1, "n": 1, "lambda": 21.2589},
+      {"m": 1, "n": 2, "lambda": 60.8219},
+      {"m": 1, "n": 3, "lambda": 120.076},
+      {"m": 1, "n": 4, "lambda": 199.041},
+      {"m": 1, "n": 5, "lambda": 297.717},
+      {"m": 1, "n": 6, "lambda": 416.102},
+      {"m": 2, "n": 1, "lambda": 34.8614},
+      {"m": 2, "n": 2, "lambda": 84.9185},
+      {"m": 2, "n": 3, "lambda": 154.573},
+      {"m": 2, "n": 4, "lambda": 243.775},
+      {"m": 2, "n": 5, "lambda": 352.562},
+      {"m": 2, "n": 6, "lambda": 480.968},
+      {"m": 3, "n": 1, "lambda": 51.0035},
+      {"m": 3, "n": 2, "lambda": 111.327},
+      {"m": 3, "n": 3, "lambda": 191.136},
+      {"m": 3, "n": 4, "lambda": 290.426},
+      {"m": 3, "n": 5, "lambda": 409.236},
+      {"m": 3, "n": 6, "lambda": 547.577},
+      {"m": 4, "n": 1, "lambda": 69.6468},
+      {"m": 4, "n": 2, "lambda": 140.466},
+      {"m": 4, "n": 3, "lambda": 231.092},
+      {"m": 4, "n": 4, "lambda": 341.133},
+      {"m": 4, "n": 5, "lambda": 470.693},
+      {"m": 4, "n": 6, "lambda": 619.775},
+      {"m": 5, "n": 1, "lambda": 90.7863},
+      {"m": 5, "n": 2, "lambda": 172.014},
+      {"m": 5, "n": 3, "lambda": 273.188},
+      {"m": 5, "n": 4, "lambda": 393.770},
+      {"m": 5, "n": 5, "lambda": 533.867},
+      {"m": 5, "n": 6, "lambda": 693.489},
+      {"m": 6, "n": 1, "lambda": 114.412},
+      {"m": 6, "n": 2, "lambda": 206.032},
+      {"m": 6, "n": 3, "lambda": 317.521},
+      {"m": 6, "n": 4, "lambda": 448.723},
+      {"m": 6, "n": 5, "lambda": 599.225},
+      {"m": 6, "n": 6, "lambda": 769.043}
+    ]
+  },
+  "nonlinear": {
+    "arc_length_method": {
+      "initial_delta_s": 0.05,
+      "max_load_steps": 25,
+      "max_iterations_per_step": 15,
+      "tolerance": 1e-4,
+      "arc_length_scaling_alpha": 1.0
+    },
+    "geometric_nonlinearity": {
+      "von_karman_enabled": true,
+      "membrane_bending_coupling": true,
+      "large_deflection_ratio": 0.1
+    }
+  },
+  "sound_radiation": {
+    "field_hemisphere_radius_m": 5.0,
+    "grid_resolution": 12,
+    "radiation_efficiency": {
+      "ka_low_threshold": 0.5,
+      "ka_high_threshold": 5.0
+    },
+    "reference_pascals_pa": 2e-5
+  },
+  "quality_metrics": {
+    "reference_pitch_standard_a_weighted": true,
+    "reference_frequencies_hz": [523.25, 659.25, 783.99, 1046.50, 1318.51
+    ],
+    "harmonic_tolerance_cents": 100.0,
+    "inharmonicity_threshold": 0.02
+  },
+  "spectrum": {
+    "fft_size": 256,
+    "sample_rate_hz": 44100,
+    "window_function": "hann",
+    "peak_picking_threshold_db": -20.0,
+    "peak_min_frequency_hz": 80.0,
+    "peak_max_frequency_hz": 4000.0
+  },
+  "drum_reference": {
+    "ideal_diameter_cm": 50.0,
+    "thickness_to_radius_ratio": 0.015
+  }
+}

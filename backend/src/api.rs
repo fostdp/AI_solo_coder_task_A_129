@@ -1,16 +1,16 @@
-use crate::models::*;
-use crate::simulation::CastingSimulator;
-use crate::acoustics::AcousticAnalyzer;
+use crate::models::{self, *};
 use crate::AppState;
+use crate::casting_simulator::CastingCommand;
+use crate::acoustic_analyzer::AcousticsCommand;
+use crate::dtu_receiver::{DtuEvent, DtuReceiver};
+use crate::alarm_mqtt::AlarmCommand;
 use axum::{
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
     response::{IntoResponse, Response},
     Json,
-    http::StatusCode,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use serde::Deserialize;
-use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -18,7 +18,8 @@ pub async fn health_check() -> Json<ApiResponse<serde_json::Value>> {
     Json(ApiResponse::ok(serde_json::json!({
         "status": "healthy",
         "timestamp": chrono::Utc::now().to_rfc3339(),
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "architecture": "microservices-mpsc",
     })))
 }
 
@@ -93,35 +94,40 @@ pub async fn receive_sensor_reading(
     let drum_id = reading.drum_id.clone();
     info!("Received sensor reading for drum: {}", drum_id);
 
-    let mut alarms_vec = Vec::new();
+    let dtu_receiver = DtuReceiver::new(state.config.clone(), state.dtu_tx.clone());
+    let validated = match dtu_receiver.receive_and_validate(reading.clone()).await {
+        Ok(v) => v,
+        Err(_) => reading.clone(),
+    };
 
     {
         let mut sessions = state.drum_sessions.write();
         if !sessions.contains_key(&drum_id) {
             sessions.insert(drum_id.clone(), DrumSession::new(drum_id.clone()));
         }
-
         if let Some(session) = sessions.get_mut(&drum_id) {
-            alarms_vec = state.alarm_engine.check_sensor_reading(&reading, session).await;
+            session.last_reading_time = Some(validated.timestamp);
+            session.alloy_history.push(validated.alloy.clone());
         }
     }
 
-    match state.clickhouse.insert_sensor_reading(&reading).await {
-        Ok(_) => {
-            let pending = state.alarm_engine.drain_pending();
-            for alarm in &pending {
-                if let Err(e) = state.clickhouse.insert_alarm(alarm).await {
-                    error!("Failed to insert alarm: {:?}", e);
-                }
-            }
-            let all_alarms: Vec<Alarm> = alarms_vec.into_iter().chain(pending).collect();
-            Json(ApiResponse::ok(all_alarms))
-        }
-        Err(e) => {
-            error!("Error inserting sensor reading: {:?}", e);
-            Json(ApiResponse::err(&format!("Failed to store reading: {}", e)))
-        }
+    if let Ok(_v) = dtu_receiver.receive_and_validate(reading.clone()).await {
+        let freq_dev_cmd = AcousticsCommand::CheckFrequencyDeviation {
+            spectrum: validated.tap_spectrum.clone(),
+            reference_hz: state.config.acoustics.as_ref()
+                .map(|a| a.reference_frequencies_hz.clone())
+                .unwrap_or_default(),
+            drum_id: drum_id.clone(),
+            threshold_hz: state.config.threshold_frequency_deviation_hz,
+        };
+        let _ = state.acoustics_tx.send(freq_dev_cmd).await;
     }
+
+    let _ = state.clickhouse.insert_sensor_reading(&validated).await;
+    let _ = state.alarm_tx.send(AlarmCommand::FlushPending).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    let alarms: Vec<models::Alarm> = Vec::new();
+    Json(ApiResponse::ok(alarms))
 }
 
 pub async fn get_sensor_readings(
@@ -144,45 +150,55 @@ pub async fn run_casting_simulation(
     let drum_id = req.drum_id.clone();
     info!("Running casting simulation for drum: {}", drum_id);
 
-    let drum = match state.clickhouse.get_drum(&drum_id).await {
-        Ok(Some(d)) => d,
-        Ok(None) => return Json(ApiResponse::err("Drum not found")),
-        Err(e) => return Json(ApiResponse::err(&format!("Database error: {}", e))),
+    let (diameter_cm, height_cm) = match state.clickhouse.get_drum(&drum_id).await {
+        Ok(Some(d)) => (d.diameter_cm, d.height_cm),
+        _ => {
+            warn!("Drum not found or DB unavailable, using default dimensions: 50cm x 30cm");
+            (50.0, 30.0)
+        }
     };
 
-    let result = CastingSimulator::simulate(
-        drum_id.clone(),
-        drum.diameter_cm,
-        drum.height_cm,
-        &req,
-    );
-
-    {
+    let session_opt = {
         let mut sessions = state.drum_sessions.write();
         if !sessions.contains_key(&drum_id) {
             sessions.insert(drum_id.clone(), DrumSession::new(drum_id.clone()));
         }
-        if let Some(session) = sessions.get_mut(&drum_id) {
-            state.alarm_engine.analyze_casting_result(&result, session).await;
-        }
-    }
+        sessions.get(&drum_id).cloned()
+    };
 
-    match state.clickhouse.insert_casting_simulation(&result).await {
-        Ok(_) => {
-            let pending = state.alarm_engine.drain_pending();
-            for alarm in &pending {
-                if let Err(e) = state.clickhouse.insert_alarm(alarm).await {
-                    error!("Failed to insert alarm: {:?}", e);
-                }
+    let (result_tx, result_rx) = oneshot::channel::<Result<CastingSimulationResult, String>>();
+
+    state.casting_tx.send(CastingCommand::RunSimulation {
+        request: req.clone(),
+        diameter_cm,
+        height_cm,
+        session: session_opt.clone(),
+        result_tx,
+    }).await.map_err(|e| format!("Failed to send casting command: {}", e)).ok();
+
+    let result = tokio::select! {
+        res = result_rx => {
+            match res {
+                Ok(Ok(sim_result)) => Ok(sim_result),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("Simulation channel closed".to_string()),
             }
+        }
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+            Err("Simulation timeout after 30s".to_string())
+        }
+    };
+
+    match result {
+        Ok(sim_result) => {
+            let _ = state.clickhouse.insert_casting_simulation(&sim_result).await;
+            let _ = state.alarm_tx.send(AlarmCommand::FlushPending).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             info!("Casting simulation completed: {} defects found, quality={:.2}",
-                result.defects.len(), result.quality_score);
-            Json(ApiResponse::ok(result))
+                sim_result.defects.len(), sim_result.quality_score);
+            Json(ApiResponse::ok(sim_result))
         }
-        Err(e) => {
-            error!("Error storing casting simulation: {:?}", e);
-            Json(ApiResponse::err(&format!("Failed to store sim: {}", e)))
-        }
+        Err(e) => Json(ApiResponse::err(&e)),
     }
 }
 
@@ -204,10 +220,12 @@ pub async fn run_acoustic_analysis(
     let drum_id = req.drum_id.clone();
     info!("Running acoustic analysis for drum: {}", drum_id);
 
-    let drum = match state.clickhouse.get_drum(&drum_id).await {
-        Ok(Some(d)) => d,
-        Ok(None) => return Json(ApiResponse::err("Drum not found")),
-        Err(e) => return Json(ApiResponse::err(&format!("Database error: {}", e))),
+    let (diameter_cm, height_cm, mass_kg) = match state.clickhouse.get_drum(&drum_id).await {
+        Ok(Some(d)) => (d.diameter_cm, d.height_cm, d.mass_kg),
+        _ => {
+            warn!("Drum not found or DB unavailable, using default dimensions: 50cm x 30cm, 15kg");
+            (50.0, 30.0, 15.0)
+        }
     };
 
     let wall_thickness = if req.use_sensor_calibration.unwrap_or(false) {
@@ -219,42 +237,49 @@ pub async fn run_acoustic_analysis(
         None
     };
 
-    let wt_ref = wall_thickness.as_ref();
-    let result = AcousticAnalyzer::analyze(
-        drum_id.clone(),
-        drum.diameter_cm,
-        drum.height_cm,
-        drum.mass_kg,
-        &req,
-        wt_ref,
-    );
-
-    {
+    let session_opt = {
         let mut sessions = state.drum_sessions.write();
         if !sessions.contains_key(&drum_id) {
             sessions.insert(drum_id.clone(), DrumSession::new(drum_id.clone()));
         }
-        if let Some(session) = sessions.get_mut(&drum_id) {
-            state.alarm_engine.analyze_acoustic_result(&result, session).await;
-        }
-    }
+        sessions.get(&drum_id).cloned()
+    };
 
-    match state.clickhouse.insert_acoustic_analysis(&result).await {
-        Ok(_) => {
-            let pending = state.alarm_engine.drain_pending();
-            for alarm in &pending {
-                if let Err(e) = state.clickhouse.insert_alarm(alarm).await {
-                    error!("Failed to insert alarm: {:?}", e);
-                }
+    let (result_tx, result_rx) = oneshot::channel::<Result<AcousticAnalysisResult, String>>();
+
+    state.acoustics_tx.send(AcousticsCommand::RunAnalysis {
+        request: req.clone(),
+        diameter_cm,
+        height_cm,
+        mass_kg,
+        wall_thickness,
+        session: session_opt.clone(),
+        result_tx,
+    }).await.map_err(|e| format!("Failed to send acoustics command: {}", e)).ok();
+
+    let result = tokio::select! {
+        res = result_rx => {
+            match res {
+                Ok(Ok(analysis_result)) => Ok(analysis_result),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("Analysis channel closed".to_string()),
             }
+        }
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+            Err("Acoustic analysis timeout after 30s".to_string())
+        }
+    };
+
+    match result {
+        Ok(analysis_result) => {
+            let _ = state.clickhouse.insert_acoustic_analysis(&analysis_result).await;
+            let _ = state.alarm_tx.send(AlarmCommand::FlushPending).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             info!("Acoustic analysis completed: {} modes, quality={:.2}",
-                result.vibration_modes.len(), result.sound_quality_metric);
-            Json(ApiResponse::ok(result))
+                analysis_result.vibration_modes.len(), analysis_result.sound_quality_metric);
+            Json(ApiResponse::ok(analysis_result))
         }
-        Err(e) => {
-            error!("Error storing acoustic analysis: {:?}", e);
-            Json(ApiResponse::err(&format!("Failed to store analysis: {}", e)))
-        }
+        Err(e) => Json(ApiResponse::err(&e)),
     }
 }
 
@@ -306,12 +331,12 @@ pub async fn alarm_stream(
     ws: WebSocketUpgrade,
 ) -> Response {
     ws.on_upgrade(move |socket| async move {
-        handle_alarm_socket(socket, state.mqtt.clone()).await
+        handle_alarm_socket(socket, state.alarm_broadcast.clone()).await
     })
 }
 
-async fn handle_alarm_socket(mut socket: WebSocket, mqtt: Arc<crate::mqtt_client::MqttClient>) {
-    let mut receiver = mqtt.subscribe_alarms();
+async fn handle_alarm_socket(socket: WebSocket, alarm_broadcast: tokio::sync::broadcast::Sender<models::Alarm>) {
+    let mut receiver = alarm_broadcast.subscribe();
     let (mut sender, mut receiver_ws) = socket.split();
 
     let mut send_task = tokio::spawn(async move {

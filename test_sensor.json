@@ -1,0 +1,22 @@
+{
+  "drum_id": "test-gu-001",
+  "reading_id": "read-001",
+  "timestamp": "2026-06-16T04:30:00Z",
+  "alloy": {
+    "copper_pct": 75.0,
+    "tin_pct": 15.0,
+    "lead_pct": 8.0,
+    "zinc_pct": 1.5,
+    "other_impurities_pct": 0.5
+  },
+  "wall_thickness": [
+    {"zone": "center", "x_frac": 0.5, "y_frac": 0.5, "thickness_mm": 5.0}
+  ],
+  "tap_spectrum": [
+    {"frequency_hz": 523.25, "amplitude": 0.95},
+    {"frequency_hz": 659.25, "amplitude": 0.85}
+  ],
+  "temperature_c": 25.0,
+  "ambient_humidity_pct": 60.0,
+  "sensor_ids": ["s1", "s2"]
+}

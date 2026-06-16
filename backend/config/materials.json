@@ -1,0 +1,59 @@
+{
+  "materials": [
+    {
+      "name": "Cu-Sn-Pb Bronze",
+      "description": "古代铜鼓典型锡铅青铜",
+      "base_alloy": {
+        "copper_pct": 70.0,
+        "tin_pct": 15.0,
+        "lead_pct": 10.0,
+        "zinc_pct": 3.0,
+        "other_impurities_pct": 2.0
+      },
+      "mechanical": {
+        "youngs_modulus_pa": 1.1e11,
+        "poissons_ratio": 0.34,
+        "density_kgm3": 8700.0,
+        "yield_strength_pa": 1.8e8
+      },
+      "thermal": {
+        "thermal_conductivity_wmk": 62.0,
+        "specific_heat_jkgk": 377.0,
+        "thermal_expansion_perk": 1.8e-5,
+        "latent_heat_jkg": 2.05e5
+      },
+      "casting": {
+        "solidus_temperature_c": 850.0,
+        "liquidus_temperature_c": 980.0,
+        "pour_temperature_min_c": 1150.0,
+        "pour_temperature_max_c": 1250.0,
+        "shrinkage_pct": 4.7
+      },
+      "phase_diagram": {
+        "tin_liquidus_slope": 2.8,
+        "lead_depression_per_pct": 2.2,
+        "eutectic_tin_pct": 32.5,
+        "eutectic_temp_c": 799.0
+      },
+      "chvorinov_constant_sqrt": 2.48e-6,
+      "n": 1.93,
+      "hot_tear_threshold_cooling_rate_ks": 150.0,
+      "cold_shut_min_superheat_c": 30.0,
+      "grid_refinement": {
+        "max_depth": 3,
+        "default_size": 32,
+        "sun_pattern_rays": 12,
+        "boss_inner_radius_frac": 0.12,
+        "ray_band_radius_frac": 0.22,
+        "halo_radius_frac": 0.32,
+        "refinement_threshold": 0.6
+      }
+    }
+  ],
+  "sensor_calibration": {
+    "default_wall_thickness_mm": 4.5,
+    "thickness_tolerance_mm": 0.5,
+    "temperature_sensor_count": 3,
+    "acquisition_interval_sec": 3600
+  }
+}

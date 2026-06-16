@@ -177,6 +177,7 @@ pub struct SoundFieldPoint {
     pub z: f64,
     pub pressure_pa: f64,
     pub spl_db: f64,
+    pub intensity_wm2: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +272,7 @@ pub struct DrumSession {
     pub last_acoustic_analysis: Option<String>,
     pub active_alarms: usize,
     pub reference_frequencies_hz: Vec<f64>,
+    pub alloy_history: Vec<AlloyComposition>,
 }
 
 impl DrumSession {
@@ -282,6 +284,7 @@ impl DrumSession {
             last_acoustic_analysis: None,
             active_alarms: 0,
             reference_frequencies_hz: vec![523.25, 659.25, 783.99, 1046.50, 1318.51],
+            alloy_history: Vec::new(),
         }
     }
 }

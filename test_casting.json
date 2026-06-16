@@ -1,0 +1,13 @@
+{
+  "drum_id": "test-gu-001",
+  "alloy": {
+    "copper_pct": 75.0,
+    "tin_pct": 15.0,
+    "lead_pct": 8.0,
+    "zinc_pct": 1.5,
+    "other_impurities_pct": 0.5
+  },
+  "pour_temperature_c": 1180.0,
+  "mold_temperature_c": 300.0,
+  "cooling_time_s": 3600.0
+}
