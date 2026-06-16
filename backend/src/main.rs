@@ -1,8 +1,9 @@
 use axum::{
     routing::{get, post},
     Router,
-    extract::State,
-    response::Json,
+    response::IntoResponse,
+    body::Body,
+    http::{HeaderMap, StatusCode},
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -19,6 +20,7 @@ pub mod dtu_receiver;
 pub mod casting_simulator;
 pub mod acoustic_analyzer;
 pub mod alarm_mqtt;
+pub mod metrics;
 
 use config::AppConfig;
 use clickhouse_client::ClickHouseClient;
@@ -41,6 +43,7 @@ pub struct AppState {
     pub casting_tx: mpsc::Sender<CastingCommand>,
     pub acoustics_tx: mpsc::Sender<AcousticsCommand>,
     pub alarm_tx: mpsc::Sender<AlarmCommand>,
+    pub metrics: Arc<metrics::MetricsRegistry>,
 }
 
 #[tokio::main]
@@ -56,6 +59,10 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load();
     let config = Arc::new(config);
     info!("Starting Bronze Drum System v2.0.0 [mpsc microservice architecture]");
+
+    // 初始化 Prometheus 指标采集
+    let metrics_registry = metrics::init_prometheus();
+    info!("Prometheus metrics endpoint ready at /metrics");
 
     if let Some(mat) = &config.material {
         info!("Material config loaded: {} (E={:.2e}Pa, ρ={:.0}kg/m³)",
@@ -132,9 +139,19 @@ async fn main() -> anyhow::Result<()> {
         casting_tx,
         acoustics_tx,
         alarm_tx,
+        metrics: metrics_registry.clone(),
     };
 
+    async fn metrics_handler(
+        axum::extract::State(state): axum::extract::State<AppState>,
+    ) -> impl IntoResponse {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "text/plain; version=0.0.4".parse().unwrap());
+        (StatusCode::OK, headers, Body::from(metrics::render(&state.metrics)))
+    }
+
     let app = Router::new()
+        .route("/metrics", get(metrics_handler))
         .route("/api/health", get(api::health_check))
         .route("/api/drums", get(api::list_drums))
         .route("/api/drums/:id", get(api::get_drum))

@@ -1,0 +1,182 @@
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: bronze-clickhouse
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init_full.sql:/docker-entrypoint-initdb.d/init_full.sql:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - bronze-net
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.18
+    container_name: bronze-mqtt
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t '$$SYS/broker/version' -n || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bronze-net
+
+  mqtt-exporter:
+    image: sapcc/mosquitto-exporter:0.8.0
+    container_name: bronze-mqtt-exporter
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - MQTT_BROKER_ADDR=tcp://mqtt:1883
+    ports:
+      - "9234:9234"
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    networks:
+      - bronze-net
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: bronze-prometheus
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - bronze-net
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bronze-backend
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - RUST_LOG=bronze_drum_system=debug,tower_http=info,axum=info
+      - CLICKHOUSE_URL=${CLICKHOUSE_URL}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - MQTT_HOST=${MQTT_HOST}
+      - MQTT_PORT=${MQTT_PORT}
+      - SERVER_PORT=${SERVER_PORT}
+    ports:
+      - "${SERVER_PORT}:8080"
+    volumes:
+      - ./backend/config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - bronze-net
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bronze-frontend
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bronze-net
+    depends_on:
+      - backend
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: bronze-simulator
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - API_BASE=${API_BASE}
+      - MQTT_HOST=${MQTT_HOST}
+      - MQTT_PORT=${MQTT_PORT}
+    command: ["--interval", "${SIMULATOR_INTERVAL}"]
+    networks:
+      - bronze-net
+    depends_on:
+      backend:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+
+volumes:
+  clickhouse_data:
+    driver: local
+  mqtt_data:
+    driver: local
+  mqtt_log:
+    driver: local
+  prometheus_data:
+    driver: local
+
+networks:
+  bronze-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

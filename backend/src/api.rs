@@ -4,6 +4,7 @@ use crate::casting_simulator::CastingCommand;
 use crate::acoustic_analyzer::AcousticsCommand;
 use crate::dtu_receiver::{DtuEvent, DtuReceiver};
 use crate::alarm_mqtt::AlarmCommand;
+use crate::metrics as app_metrics;
 use axum::{
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
     response::{IntoResponse, Response},
@@ -13,8 +14,10 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use std::time::Instant;
 
 pub async fn health_check() -> Json<ApiResponse<serde_json::Value>> {
+    app_metrics::inc_http_request("GET", "/api/health", 200);
     Json(ApiResponse::ok(serde_json::json!({
         "status": "healthy",
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -84,6 +87,7 @@ pub async fn receive_sensor_reading(
     State(state): State<AppState>,
     Json(mut reading): Json<SensorReading>,
 ) -> Json<ApiResponse<Vec<Alarm>>> {
+    let start = Instant::now();
     if reading.reading_id.is_empty() {
         reading.reading_id = Uuid::new_v4().to_string();
     }
@@ -127,6 +131,14 @@ pub async fn receive_sensor_reading(
     let _ = state.alarm_tx.send(AlarmCommand::FlushPending).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     let alarms: Vec<models::Alarm> = Vec::new();
+
+    // 记录指标
+    let elapsed = start.elapsed().as_secs_f64();
+    app_metrics::inc_sensor_reading(&drum_id, true);
+    app_metrics::inc_http_request("POST", "/api/sensor/readings", 200);
+    app_metrics::record_http_duration("POST", "/api/sensor/readings", elapsed);
+    app_metrics::set_active_sessions(state.drum_sessions.read().len());
+
     Json(ApiResponse::ok(alarms))
 }
 
@@ -147,6 +159,7 @@ pub async fn run_casting_simulation(
     State(state): State<AppState>,
     Json(req): Json<CastingSimulationRequest>,
 ) -> Json<ApiResponse<CastingSimulationResult>> {
+    let start = Instant::now();
     let drum_id = req.drum_id.clone();
     info!("Running casting simulation for drum: {}", drum_id);
 
@@ -196,9 +209,20 @@ pub async fn run_casting_simulation(
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             info!("Casting simulation completed: {} defects found, quality={:.2}",
                 sim_result.defects.len(), sim_result.quality_score);
+
+            let elapsed = start.elapsed().as_secs_f64();
+            let quality_ok = sim_result.quality_score >= 0.6;
+            app_metrics::inc_casting_simulation(&drum_id, quality_ok);
+            app_metrics::inc_http_request("POST", "/api/casting/simulate", 200);
+            app_metrics::record_http_duration("POST", "/api/casting/simulate", elapsed);
+
             Json(ApiResponse::ok(sim_result))
         }
-        Err(e) => Json(ApiResponse::err(&e)),
+        Err(e) => {
+            app_metrics::inc_casting_simulation(&drum_id, false);
+            app_metrics::inc_http_request("POST", "/api/casting/simulate", 500);
+            Json(ApiResponse::err(&e))
+        }
     }
 }
 
@@ -217,6 +241,7 @@ pub async fn run_acoustic_analysis(
     State(state): State<AppState>,
     Json(req): Json<AcousticAnalysisRequest>,
 ) -> Json<ApiResponse<AcousticAnalysisResult>> {
+    let start = Instant::now();
     let drum_id = req.drum_id.clone();
     info!("Running acoustic analysis for drum: {}", drum_id);
 
@@ -277,9 +302,20 @@ pub async fn run_acoustic_analysis(
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             info!("Acoustic analysis completed: {} modes, quality={:.2}",
                 analysis_result.vibration_modes.len(), analysis_result.sound_quality_metric);
+
+            let elapsed = start.elapsed().as_secs_f64();
+            let pass = analysis_result.sound_quality_metric >= 0.7;
+            app_metrics::inc_acoustic_analysis(&drum_id, pass);
+            app_metrics::inc_http_request("POST", "/api/acoustics/analyze", 200);
+            app_metrics::record_http_duration("POST", "/api/acoustics/analyze", elapsed);
+
             Json(ApiResponse::ok(analysis_result))
         }
-        Err(e) => Json(ApiResponse::err(&e)),
+        Err(e) => {
+            app_metrics::inc_acoustic_analysis(&drum_id, false);
+            app_metrics::inc_http_request("POST", "/api/acoustics/analyze", 500);
+            Json(ApiResponse::err(&e))
+        }
     }
 }
 

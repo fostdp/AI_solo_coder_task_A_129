@@ -1,0 +1,144 @@
+{
+  "simulator": {
+    "name": "古代铜鼓铸造工艺模拟器",
+    "version": "2.0.0",
+    "description": "支持多种合金配方和壁厚分布的铜鼓工艺数据模拟器"
+  },
+  "alloy_recipes": {
+    "zhuang_standard": {
+      "name": "壮族标准锡铅青铜",
+      "copper_pct": 77.8,
+      "tin_pct": 18.3,
+      "lead_pct": 3.2,
+      "zinc_pct": 0.4,
+      "other_pct": 0.3
+    },
+    "miao_high_tin": {
+      "name": "苗族高锡青铜",
+      "copper_pct": 75.5,
+      "tin_pct": 20.1,
+      "lead_pct": 3.8,
+      "zinc_pct": 0.3,
+      "other_pct": 0.3
+    },
+    "dong_low_lead": {
+      "name": "侗族低铅青铜",
+      "copper_pct": 79.5,
+      "tin_pct": 17.2,
+      "lead_pct": 2.5,
+      "zinc_pct": 0.5,
+      "other_pct": 0.3
+    },
+    "yi_early_bronze": {
+      "name": "彝族早期青铜",
+      "copper_pct": 82.0,
+      "tin_pct": 15.5,
+      "lead_pct": 1.8,
+      "zinc_pct": 0.4,
+      "other_pct": 0.3
+    },
+    "bai_custom_alloy": {
+      "name": "白族定制配方",
+      "copper_pct": 73.0,
+      "tin_pct": 12.0,
+      "lead_pct": 13.0,
+      "zinc_pct": 1.5,
+      "other_pct": 0.5
+    }
+  },
+  "thickness_profiles": {
+    "uniform": {
+      "name": "均匀壁厚",
+      "base_mm": 6.0,
+      "variation_pct": 5.0
+    },
+    "center_thick": {
+      "name": "中心厚边缘薄",
+      "center_mm": 8.0,
+      "edge_mm": 4.0,
+      "variation_pct": 8.0
+    },
+    "edge_thick": {
+      "name": "边缘厚中心薄",
+      "center_mm": 4.0,
+      "edge_mm": 8.0,
+      "variation_pct": 8.0
+    },
+    "wavy": {
+      "name": "波浪形壁厚",
+      "base_mm": 6.0,
+      "amplitude_mm": 1.5,
+      "wave_count": 4,
+      "variation_pct": 10.0
+    },
+    "defect_prone": {
+      "name": "易缺陷分布",
+      "base_mm": 6.0,
+      "thin_zone_pct": 25,
+      "thin_factor": 0.6,
+      "variation_pct": 15.0
+    }
+  },
+  "drums": [
+    {
+      "drum_id": "drum-001-zhuang",
+      "name": "左江花山型铜鼓",
+      "ethnic_group": "壮族",
+      "diameter_cm": 78.5,
+      "height_cm": 52.3,
+      "base_alloy": "zhuang_standard",
+      "base_thickness": "uniform",
+      "resonance_freqs_hz": [523.25, 659.25, 783.99, 1046.50, 1318.51]
+    },
+    {
+      "drum_id": "drum-002-miao",
+      "name": "雷山型大铜鼓",
+      "ethnic_group": "苗族",
+      "diameter_cm": 112.0,
+      "height_cm": 76.0,
+      "base_alloy": "miao_high_tin",
+      "base_thickness": "edge_thick",
+      "resonance_freqs_hz": [392.0, 493.88, 587.33, 783.99, 987.77]
+    },
+    {
+      "drum_id": "drum-003-dong",
+      "name": "从江侗族铜鼓",
+      "ethnic_group": "侗族",
+      "diameter_cm": 56.2,
+      "height_cm": 38.0,
+      "base_alloy": "dong_low_lead",
+      "base_thickness": "center_thick",
+      "resonance_freqs_hz": [659.25, 783.99, 987.77, 1174.66, 1396.91]
+    },
+    {
+      "drum_id": "drum-004-bouyei",
+      "name": "黔南布依铜鼓",
+      "ethnic_group": "布依族",
+      "diameter_cm": 65.8,
+      "height_cm": 44.5,
+      "base_alloy": "zhuang_standard",
+      "base_thickness": "wavy",
+      "resonance_freqs_hz": [587.33, 698.46, 880.00, 1046.50, 1318.51]
+    },
+    {
+      "drum_id": "drum-005-yi",
+      "name": "楚雄万家坝型",
+      "ethnic_group": "彝族",
+      "diameter_cm": 45.0,
+      "height_cm": 28.0,
+      "base_alloy": "yi_early_bronze",
+      "base_thickness": "uniform",
+      "resonance_freqs_hz": [698.46, 880.00, 1046.50, 1318.51, 1567.98]
+    },
+    {
+      "drum_id": "drum-006-bai",
+      "name": "大理白族铜鼓",
+      "ethnic_group": "白族",
+      "diameter_cm": 62.0,
+      "height_cm": 42.0,
+      "base_alloy": "bai_custom_alloy",
+      "base_thickness": "defect_prone",
+      "resonance_freqs_hz": [554.37, 659.25, 830.61, 1108.73, 1244.51]
+    }
+  ]
+}

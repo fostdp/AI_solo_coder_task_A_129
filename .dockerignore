@@ -1,0 +1,14 @@
+**/.git
+**/.gitignore
+**/target
+**/node_modules
+**/.vscode
+**/.idea
+**/*.log
+**/*.md
+!README.md
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+**/*.pyo
+backend/Cargo.lock.swp
